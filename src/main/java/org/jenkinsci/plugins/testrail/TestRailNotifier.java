@@ -7,9 +7,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
+ * <p>
  *     http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -18,32 +18,37 @@
  */
 package org.jenkinsci.plugins.testrail;
 
-import hudson.Extension;
-import hudson.FilePath;
-import hudson.Launcher;
-import hudson.Util;
-import hudson.model.AbstractBuild;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import hudson.*;
 import hudson.model.AbstractProject;
-import hudson.model.BuildListener;
 import hudson.model.TaskListener;
-import hudson.util.ListBoxModel;
-import hudson.tasks.*;
+import hudson.tasks.BuildStepDescriptor;
+import hudson.tasks.BuildStepMonitor;
+import hudson.tasks.Notifier;
+import hudson.tasks.Publisher;
 import hudson.util.FormValidation;
+import hudson.util.ListBoxModel;
 import jenkins.tasks.SimpleBuildStep;
 import net.sf.json.JSONObject;
 import org.jenkinsci.Symbol;
-import org.jenkinsci.plugins.testrail.JUnit.*;
+import org.jenkinsci.plugins.testrail.JUnit.Failure;
+import org.jenkinsci.plugins.testrail.JUnit.JUnitResults;
+import org.jenkinsci.plugins.testrail.JUnit.TestCase;
+import org.jenkinsci.plugins.testrail.JUnit.TestSuite;
+import org.jenkinsci.plugins.testrail.TestRail.*;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
 import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.StaplerRequest;
-import org.jenkinsci.plugins.testrail.TestRail.*;
 
 import javax.annotation.Nonnull;
-import javax.servlet.ServletException;
 import javax.xml.bind.JAXBException;
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.List;
+
+import static org.jenkinsci.plugins.testrail.Utils.log;
 
 public class TestRailNotifier extends Notifier implements SimpleBuildStep {
 
@@ -86,26 +91,27 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
 
 
     @Override
-    public void perform(@Nonnull hudson.model.Run<?, ?> run, @Nonnull FilePath workspace, @Nonnull Launcher launcher, @Nonnull TaskListener taskListener) throws InterruptedException, IOException {
+    public void perform(@Nonnull hudson.model.Run<?, ?> run, @Nonnull FilePath workspace, @Nonnull EnvVars envVars, @Nonnull Launcher launcher, @Nonnull TaskListener taskListener) throws InterruptedException, IOException {
         TestRailClient  testrail = getDescriptor().getTestrailInstance();
         testrail.setHost(getDescriptor().getTestrailHost());
         testrail.setUser(getDescriptor().getTestrailUser());
         testrail.setPassword(getDescriptor().getTestrailPassword());
 
-        ExistingTestCases testCases = null;
+        ExistingTestCases testCases;
         try {
             testCases = new ExistingTestCases(testrail, this.testrailProject, this.testrailSuite);
         } catch (ElementNotFoundException e) {
             taskListener.getLogger().println("Cannot find project or suite on TestRail server. Please check your Jenkins job and system configurations.");
             run.setResult(hudson.model.Result.FAILURE);
+            return;
         }
 
-        String[] caseNames = null;
+        String[] caseNames;
         try {
             caseNames = testCases.listTestCases();
             taskListener.getLogger().println("Test Cases: ");
-            for (int i = 0; i < caseNames.length; i++) {
-                taskListener.getLogger().println("  " + caseNames[i]);
+            for (String caseName : caseNames) {
+                taskListener.getLogger().println("  " + caseName);
             }
         } catch (ElementNotFoundException e) {
             taskListener.getLogger().println("Failed to list test cases");
@@ -131,13 +137,17 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
             taskListener.getLogger().println("Error trying to copy files to Jenkins master: " + e.getMessage());
             run.setResult(hudson.model.Result.FAILURE);
         }
-        JUnitResults actualJunitResults = null;
+
+        JUnitResults actualJunitResults;
+
         try {
             actualJunitResults = new JUnitResults(tempdir, this.junitResultsGlob, taskListener.getLogger());
         } catch (JAXBException e) {
-            taskListener.getLogger().println(e.getMessage());
+            log(e.getMessage());
             run.setResult(hudson.model.Result.FAILURE);
+            return;
         }
+
         List<TestSuite> suites = actualJunitResults.getSuites();
         try {
             for (TestSuite suite: suites) {
@@ -163,14 +173,16 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
             run.setResult(hudson.model.Result.FAILURE);
         }
 
-        boolean buildResult = (200 == response.getStatus());
+        boolean buildResult = (response != null && response.getStatus() == 200);
+
         if (buildResult) {
             taskListener.getLogger().println("Successfully uploaded test results.");
         } else {
             taskListener.getLogger().println("Failed to add results to TestRail.");
-            taskListener.getLogger().println("status: " + response.getStatus());
-            taskListener.getLogger().println("body :\n" + response.getBody());
+            taskListener.getLogger().println("status: " + ((response != null) ? response.getStatus() : -1));
+            taskListener.getLogger().println("body :\n" + ((response != null) ? response.getBody() : "NULL"));
         }
+
         try {
             testrail.closeRun(runId);
         } catch (Exception e) {
@@ -188,8 +200,8 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
             try {
                 sectionId = existingCases.addSection(suite.getName(), parentId);
             } catch (ElementNotFoundException e) {
-                //listener.getLogger().println("Unable to add test section " + suite.getName());
-                //listener.getLogger().println(e.getMessage());
+                log("Unable to add test section " + suite.getName());
+                log(e.getMessage());
                 return null;
             }
         }
@@ -269,7 +281,7 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
         }
 
         public FormValidation doCheckTestrailProject(@QueryParameter int value)
-                throws IOException, ServletException {
+                throws IOException {
             testrail.setHost(getTestrailHost());
             testrail.setUser(getTestrailUser());
             testrail.setPassword(getTestrailPassword());
@@ -289,8 +301,7 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
                 for (Project prj : testrail.getProjects()) {
                     items.add(prj.getName(), prj.getStringId());
                 }
-            } catch (ElementNotFoundException e) {
-            } catch (IOException e) {
+            } catch (ElementNotFoundException | IOException ignored) {
             }
 
             return items;
@@ -306,15 +317,14 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
                 for (Suite suite : testrail.getSuites(testrailProject)) {
                     items.add(suite.getName(), suite.getStringId());
                 }
-            } catch (ElementNotFoundException e) {
-            } catch (IOException e) {
+            } catch (ElementNotFoundException | IOException ignored) {
             }
 
             return items;
         }
 
         public FormValidation doCheckTestrailSuite(@QueryParameter String value)
-                throws IOException, ServletException {
+                throws IOException {
             testrail.setHost(getTestrailHost());
             testrail.setUser(getTestrailUser());
             testrail.setPassword(getTestrailPassword());
@@ -326,22 +336,22 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
             return FormValidation.ok();
         }
 
-        public FormValidation doCheckJunitResultsGlob(@QueryParameter String value)
-                throws IOException, ServletException {
-            if (value.length() == 0)
+        public FormValidation doCheckJunitResultsGlob(@QueryParameter String value) {
+            if (value.isEmpty()) {
                 return FormValidation.warning("Please select test result path.");
+            }
             // TODO: Should we check to see if the files exist? Probably not.
             return FormValidation.ok();
         }
 
-        public FormValidation doCheckTestrailHost(@QueryParameter String value)
-                throws IOException, ServletException {
-            if (value.length() == 0) {
+        public FormValidation doCheckTestrailHost(@QueryParameter String value) {
+            if (value.isEmpty()) {
                 return FormValidation.warning("Please add your TestRail host URI.");
             }
-            // TODO: There is probably a better way to do URL validation.
-            if (!value.startsWith("http://") && !value.startsWith("https://")) {
-                return FormValidation.error("Host must be a valid URL.");
+            try {
+                new URI(value);
+            } catch (URISyntaxException e) {
+                return FormValidation.error("Host must be a valid URI");
             }
             testrail.setHost(value);
             testrail.setUser("");
@@ -355,11 +365,11 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
         public FormValidation doCheckTestrailUser(@QueryParameter String value,
                                                   @QueryParameter String testrailHost,
                                                   @QueryParameter String testrailPassword)
-                throws IOException, ServletException {
-            if (value.length() == 0) {
+                throws IOException {
+            if (value.isEmpty()) {
                 return FormValidation.warning("Please add your user's email address.");
             }
-            if (testrailPassword.length() > 0) {
+            if (!testrailPassword.isEmpty()) {
                 testrail.setHost(testrailHost);
                 testrail.setUser(value);
                 testrail.setPassword(testrailPassword);
@@ -373,11 +383,11 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
         public FormValidation doCheckTestrailPassword(@QueryParameter String value,
                                                       @QueryParameter String testrailHost,
                                                       @QueryParameter String testrailUser)
-                throws IOException, ServletException {
-            if (value.length() == 0) {
+                throws IOException {
+            if (value.isEmpty()) {
                 return FormValidation.warning("Please add your password.");
             }
-            if (testrailUser.length() > 0) {
+            if (!testrailUser.isEmpty()) {
                 testrail.setHost(testrailHost);
                 testrail.setUser(testrailUser);
                 testrail.setPassword(value);
@@ -395,8 +405,7 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
                 for (Milestone mstone : testrail.getMilestones(testrailProject)) {
                     items.add(mstone.getName(), mstone.getId());
                 }
-            } catch (ElementNotFoundException e) {
-            } catch (IOException e) {
+            } catch (ElementNotFoundException | IOException ignored) {
             }
             return items;
         }
@@ -407,8 +416,9 @@ public class TestRailNotifier extends Notifier implements SimpleBuildStep {
         }
 
         /**
-         * This human readable name is used in the configuration screen.
+         * This human-readable name is used in the configuration screen.
          */
+        @NonNull
         public String getDisplayName() {
             return "TestRail Plugin";
         }

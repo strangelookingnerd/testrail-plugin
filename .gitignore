@@ -26,3 +26,6 @@ build
 # maven release files
 *.releaseBackup
 release.properties
+
+# ???
+.factorypath

@@ -7,9 +7,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
+ * <p>
  *     http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -18,27 +18,22 @@
  */
 package org.jenkinsci.plugins.testrail;
 
-import org.apache.commons.httpclient.HttpClient;
-import org.apache.commons.httpclient.HttpMethod;
-import org.apache.commons.httpclient.UsernamePasswordCredentials;
-import org.apache.commons.httpclient.auth.AuthScope;
-import org.apache.commons.httpclient.methods.GetMethod;
-import org.apache.commons.httpclient.methods.PostMethod;
-import org.apache.commons.httpclient.methods.StringRequestEntity;
-
+import org.apache.commons.lang.StringUtils;
+import org.apache.http.HttpException;
 import org.jenkinsci.plugins.testrail.JUnit.TestCase;
 import org.jenkinsci.plugins.testrail.TestRail.*;
-
-import org.apache.commons.lang.StringUtils;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import org.apache.http.HttpException;
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
-import java.lang.InterruptedException;
-import static org.jenkinsci.plugins.testrail.Utils.*;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+import static org.jenkinsci.plugins.testrail.Utils.log;
 /**
  * Created by Drew on 3/19/14.
  */
@@ -60,19 +55,8 @@ public class TestRailClient {
         this.password = password;
     }
 
-    private HttpClient setUpHttpClient(HttpMethod method) {
-        HttpClient httpclient = new HttpClient();
-        httpclient.getParams().setAuthenticationPreemptive(true);
-        httpclient.getState().setCredentials(
-                AuthScope.ANY,
-                new UsernamePasswordCredentials(this.user, this.password)
-        );
-        method.setDoAuthentication(true);
-        method.addRequestHeader("Content-Type", "application/json");
-        return httpclient;
-    }
-
-    private TestRailResponse httpGet(String path) throws IOException {
+    private TestRailResponse httpGet(String path)
+            throws IOException, URISyntaxException, InterruptedException {
         TestRailResponse response;
 
         do {
@@ -89,24 +73,21 @@ public class TestRailClient {
        return response;
     }
 
-    private TestRailResponse httpGetInt(String path) throws IOException {
+    private TestRailResponse httpGetInt(String path)
+            throws IOException, URISyntaxException, InterruptedException {
         TestRailResponse result;
-        GetMethod get = new GetMethod(host + "/" + path);
-        HttpClient httpclient = setUpHttpClient(get);
+        //final HttpGet get = new HttpGet(host + "/" + path);
+        final HttpRequest req = HttpRequest.newBuilder()
+                .GET().uri(new URI(host + "/" + path))
+                .build();
+        final HttpClient httpclient = HttpClient.newHttpClient();
 
-        try {
-            Integer status = httpclient.executeMethod(get);
-            String body = new String(get.getResponseBody(), get.getResponseCharSet());
-            result = new TestRailResponse(status, body);
-        } finally {
-            get.releaseConnection();
-        }
-
-        return result;
+        final HttpResponse<String> response = httpclient.send(req, HttpResponse.BodyHandlers.ofString());
+        return new TestRailResponse(response.statusCode(), response.body());
     }
 
     private TestRailResponse httpPost(String path, String payload)
-        throws UnsupportedEncodingException, IOException, TestRailException {
+        throws IOException, TestRailException {
         TestRailResponse response;
 
         try {
@@ -120,7 +101,7 @@ public class TestRailClient {
                     }
                 }
             } while (response.getStatus() == 429);  
-        } catch (HttpException e) {
+        } catch (HttpException | URISyntaxException | InterruptedException e) {
             throw new TestRailException("Posting to " + path + " returned an error!", e);
         }
 
@@ -132,55 +113,65 @@ public class TestRailClient {
     }
 
     private TestRailResponse httpPostInt(String path, String payload)
-            throws UnsupportedEncodingException, IOException, HttpException {
+            throws HttpException, URISyntaxException, IOException, InterruptedException {
         TestRailResponse result;
-        PostMethod post = new PostMethod(host + "/" + path);
-        HttpClient httpclient = setUpHttpClient(post);
+        //PostMethod post = new PostMethod(host + "/" + path);
+        final HttpRequest post = HttpRequest.newBuilder()
+                .POST(HttpRequest.BodyPublishers.ofString(payload))
+                .uri(new URI(host + "/" + path))
+                .header("Accept", "application/json")
+                .header("Content-type", "application/json;charset=UTF-8")
+                .build();
 
-        try {
-            StringRequestEntity requestEntity = new StringRequestEntity(
-                    payload,
-                    "application/json",
-                    "UTF-8"
-            );
-            post.setRequestEntity(requestEntity);
-            Integer status = httpclient.executeMethod(post);
-            String body = new String(post.getResponseBody(), post.getResponseCharSet());
-            result = new TestRailResponse(status, body);
-        } finally {
-            post.releaseConnection();
-        }
+        HttpClient httpclient = HttpClient.newHttpClient();
 
-        return result;
+        final HttpResponse<String> response = httpclient.send(post, HttpResponse.BodyHandlers.ofString());
+        return new TestRailResponse(response.statusCode(), response.body());
     }
 
-    public boolean serverReachable() throws IOException {
+    public boolean serverReachable() {
         boolean result = false;
-        HttpClient httpclient = new HttpClient();
-        GetMethod get = new GetMethod(host);
+        final HttpClient httpclient = HttpClient.newHttpClient();
+        final HttpRequest request;
         try {
-            httpclient.executeMethod(get);
-            result = true;
-        } catch (java.net.UnknownHostException e) {
-            // nop - we default to result == false
-        } finally {
-            get.releaseConnection();
+            request = HttpRequest.newBuilder(new URI(host)).GET().build();
+        } catch (URISyntaxException e) {
+            log("Bad URI given for host: " + host);
+            return false;
         }
+
+        try {
+            httpclient.send(request, HttpResponse.BodyHandlers.discarding());
+            result = true;
+        } catch (InterruptedException | IOException e) {
+            // nop - we default to result == false
+        }
+
         return result;
     }
 
     public boolean authenticationWorks() throws IOException {
-        TestRailResponse response = httpGet("/index.php?/api/v2/get_projects");
+        TestRailResponse response;
+        try {
+            response = httpGet("/index.php?/api/v2/get_projects");
+        } catch (URISyntaxException | InterruptedException e) {
+            return false;
+        }
         return (200 == response.getStatus());
     }
 
     public Project[] getProjects() throws IOException, ElementNotFoundException {
-        String body = httpGet("/index.php?/api/v2/get_projects").getBody();
-        JSONArray json = new JSONArray(body);
-        Project[] projects = new Project[json.length()];
+        String body = "";
+        try {
+            body = httpGet("/index.php?/api/v2/get_projects").getBody();
+        } catch (URISyntaxException | InterruptedException e) {
+            log("Failed to retrieve projects! The following error was returned: \n" + e);
+        }
+        final JSONArray json = new JSONArray(body);
+        final Project[] projects = new Project[json.length()];
         for (int i = 0; i < json.length(); i++) {
-            JSONObject o = json.getJSONObject(i);
-            Project p = new Project();
+            final JSONObject o = json.getJSONObject(i);
+            final Project p = new Project();
             p.setName(o.getString("name"));
             p.setId(o.getInt("id"));
             projects[i] = p;
@@ -189,10 +180,10 @@ public class TestRailClient {
     }
 
     public int getProjectId(String projectName) throws IOException, ElementNotFoundException {
-        Project[] projects = getProjects();
-        for(int i = 0; i < projects.length; i++) {
-            if (projects[i].getName().equals(projectName)) {
-                return projects[i].getId();
+        final Project[] projects = getProjects();
+        for (Project project : projects) {
+            if (project.getName().equals(projectName)) {
+                return project.getId();
             }
         }
 
@@ -200,7 +191,12 @@ public class TestRailClient {
     }
 
     public Suite[] getSuites(int projectId) throws IOException, ElementNotFoundException {
-        String body = httpGet("/index.php?/api/v2/get_suites/" + projectId).getBody();
+        String body = "";
+        try {
+            body = httpGet("/index.php?/api/v2/get_suites/" + projectId).getBody();
+        } catch (URISyntaxException | InterruptedException e) {
+            log("Failed to retrieve test suites! The following error was returned: \n" + e);
+        }
 
         JSONArray json;
         try {
@@ -227,7 +223,12 @@ public class TestRailClient {
 
     public Case[] getCases(int projectId, int suiteId) throws IOException, ElementNotFoundException {
         // "/#{project_id}&suite_id=#{suite_id}#{section_string}"
-        String body = httpGet("index.php?/api/v2/get_cases/" + projectId + "&suite_id=" + suiteId).getBody();
+        String body = "";
+        try {
+            body = httpGet("index.php?/api/v2/get_cases/" + projectId + "&suite_id=" + suiteId).getBody();
+        } catch (URISyntaxException | InterruptedException e) {
+            log("Failed to retrieve test cases! The following error was returned: \n" + e);
+        }
 
         JSONArray json;
 
@@ -237,22 +238,27 @@ public class TestRailClient {
             throw new ElementNotFoundException("No cases for project " + projectId + " and suite " + suiteId + "! Response from TestRail is: \n" + body);
         }
 
-        Case[] cases = new Case[json.length()];
+        final Case[] cases = new Case[json.length()];
         for (int i = 0; i < json.length(); i++) {
-            JSONObject o = json.getJSONObject(i);
+            final JSONObject o = json.getJSONObject(i);
             cases[i] = createCaseFromJson(o);
         }
 
         return cases;
     }
 
-    public Section[] getSections(int projectId, int suiteId) throws IOException, ElementNotFoundException {
-        String body = httpGet("index.php?/api/v2/get_sections/" + projectId + "&suite_id=" + suiteId).getBody();
-        JSONArray json = new JSONArray(body);
+    public Section[] getSections(int projectId, int suiteId) throws IOException {
+        String body = "";
+        try {
+            body = httpGet("index.php?/api/v2/get_sections/" + projectId + "&suite_id=" + suiteId).getBody();
+        } catch (URISyntaxException | InterruptedException e) {
+            log("Failed to retrieve sections! The following error was returned: \n" + e);
+        }
+        final JSONArray json = new JSONArray(body);
 
-        Section[] sects = new Section[json.length()];
+        final Section[] sects = new Section[json.length()];
         for (int i = 0; i < json.length(); i++) {
-            JSONObject o = json.getJSONObject(i);
+            final JSONObject o = json.getJSONObject(i);
             sects[i] = createSectionFromJSON(o);
         }
 
@@ -276,7 +282,7 @@ public class TestRailClient {
     }
 
     public Section addSection(String sectionName, int projectId, int suiteId, String parentId) 
-            throws IOException, ElementNotFoundException, TestRailException {
+            throws IOException, TestRailException {
         //Section section = new Section();
         String payload = new JSONObject().put("name", sectionName).put("suite_id", suiteId).put("parent_id", parentId).toString();
         String body = httpPost("index.php?/api/v2/add_section/" + projectId , payload).getBody();
@@ -304,8 +310,7 @@ public class TestRailClient {
         }
 
         String body = httpPost("index.php?/api/v2/add_case/" + sectionId, payload.toString()).getBody();
-        Case c = createCaseFromJson(new JSONObject(body));
-        return c;
+        return createCaseFromJson(new JSONObject(body));
     }
 
     public TestRailResponse addResultsForCases(int runId, TestRailResults results) 
@@ -320,8 +325,7 @@ public class TestRailClient {
 
         String payload = new JSONObject().put("results", a).toString();
         log(payload);
-        TestRailResponse response = httpPost("index.php?/api/v2/add_results_for_cases/" + runId, payload);
-        return response;
+        return httpPost("index.php?/api/v2/add_results_for_cases/" + runId, payload);
     }
 
     public int addRun(int projectId, int suiteId, String milestoneID, String description)
@@ -332,37 +336,47 @@ public class TestRailClient {
     }
 
     public Milestone[] getMilestones(int projectId) throws IOException, ElementNotFoundException {
-        String body = httpGet("index.php?/api/v2/get_milestones/" + projectId).getBody();
-        JSONArray json;
+        String body = "";
+
+        try {
+            body = httpGet("index.php?/api/v2/get_milestones/" + projectId).getBody();
+        } catch (URISyntaxException | InterruptedException e) {
+            log("Failed to retrieve milestones! The following error was returned: \n" + e);
+        }
+
+        final JSONArray json;
+
         try {
           json = new JSONArray(body);
         } catch (JSONException e) {
             return new Milestone[0];
         }
-        Milestone[] suites = new Milestone[json.length()];
+
+        final Milestone[] suites = new Milestone[json.length()];
+
         for (int i = 0; i < json.length(); i++) {
-            JSONObject o = json.getJSONObject(i);
-            Milestone s = new Milestone();
+            final JSONObject o = json.getJSONObject(i);
+            final Milestone s = new Milestone();
             s.setName(o.getString("name"));
             s.setId(String.valueOf(o.getInt("id")));
             suites[i] = s;
         }
+
         return suites;
     }
 
-    public String getMilestoneID(String milesoneName, int projectId) throws IOException, ElementNotFoundException {
-      for (Milestone mstone: getMilestones(projectId)) {
-         if (mstone.getName().equals(milesoneName)) {
+    public String getMilestoneID(String milestoneName, int projectId) throws IOException, ElementNotFoundException {
+      for (final Milestone mstone: getMilestones(projectId)) {
+         if (mstone.getName().equals(milestoneName)) {
              return mstone.getId();
          }
       }
       throw new ElementNotFoundException("Milestone id not found.");
     }
 
-    public boolean closeRun(int runId)
+    public void closeRun(int runId)
             throws IOException, TestRailException {
         String payload = "";
-        int status = httpPost("index.php?/api/v2/close_run/" + runId, payload).getStatus();
-        return (200 == status);
+        httpPost("index.php?/api/v2/close_run/" + runId, payload);
     }
 }
