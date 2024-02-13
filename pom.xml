@@ -146,6 +146,11 @@
       <artifactId>httpclient5</artifactId>
       <version>5.3.1</version>
     </dependency>
+    <dependency>
+      <groupId>org.eclipse.persistence</groupId>
+      <artifactId>org.eclipse.persistence.moxy</artifactId>
+      <version>4.0.2</version>
+    </dependency>
   </dependencies>
 
   <build>

@@ -7,9 +7,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
+ * <p>
  *     http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -33,13 +33,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 import jenkins.MasterToSlaveFileCallable;
+import org.eclipse.persistence.jaxb.JAXBContextProperties;
 
 /**
  * Created by Drew on 3/24/2014.
  */
 public class JUnitResults {
-    private FilePath baseDir;
-    private PrintStream logger;
+    private final FilePath baseDir;
+    private final PrintStream logger;
     //private String[] Files;
     private List<TestSuite> Suites;
 
@@ -50,11 +51,13 @@ public class JUnitResults {
     }
 
     public void slurpTestResults(String fileMatchers) throws IOException, JAXBException, InterruptedException {
-        Suites = new ArrayList<TestSuite>();
+        Suites = new ArrayList();
         JAXBContext jaxbSuiteContext = JAXBContext.newInstance(TestSuite.class);
         JAXBContext jaxbSuitesContext = JAXBContext.newInstance(TestSuites.class);
         final Unmarshaller jaxbSuiteUnmarshaller = jaxbSuiteContext.createUnmarshaller();
+        jaxbSuiteUnmarshaller.setProperty(JAXBContextProperties.UNMARSHALLING_CASE_INSENSITIVE, true);
         final Unmarshaller jaxbSuitesUnmarshaller = jaxbSuitesContext.createUnmarshaller();
+        jaxbSuitesUnmarshaller.setProperty(JAXBContextProperties.UNMARSHALLING_CASE_INSENSITIVE, true);
 
         final DirScanner scanner = new DirScanner.Glob(fileMatchers, null);
         logger.println("Scanning " + baseDir);
@@ -66,24 +69,22 @@ public class JUnitResults {
                 logger.println("processing " + f.getName());
                 scanner.scan(f, new FileVisitor() {
                     @Override
-                    public void visit(File file, String s) throws IOException {
+                    public void visit(File file, String s) {
                         logger.println("processing " + file.getName());
                         try {
                             TestSuites suites = (TestSuites) jaxbSuitesUnmarshaller.unmarshal(file);
                             if (suites.hasSuites()) {
-                                for (TestSuite suite : suites.getSuites()) {
-                                    Suites.add(suite);
-                                }
+                                Suites.addAll(suites.getSuites());
                             }
                         } catch (ClassCastException e) {
                             try {
                                 TestSuite suite = (TestSuite) jaxbSuiteUnmarshaller.unmarshal(file);
                                 Suites.add(suite);
                            } catch (JAXBException ex) {
-                               ex.printStackTrace();
+                               logger.println(ex);
                            }
                         } catch (JAXBException exc) {
-                            exc.printStackTrace();
+                            logger.println(exc);
                         }
                     }
                 });
@@ -95,6 +96,4 @@ public class JUnitResults {
     public List<TestSuite> getSuites() {
         return this.Suites;
     }
-
-    //public String[] getFiles() { return this.Files.clone(); }
 }
